@@ -1,0 +1,7 @@
+services:
+  kino-bot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data   # файл сессии Telethon
+    restart: unless-stopped
