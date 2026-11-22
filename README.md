@@ -10,57 +10,101 @@
 
 ## Что нужно
 
-- VPS с Linux и Python 3.11+ (или Docker);
+- Mac с macOS и Python 3.11+. Системный `python3` на macOS может оказаться старее, поэтому лучше поставить Python через [Homebrew](https://brew.sh): `brew install python@3.12`;
 - бот от [@BotFather](https://t.me/BotFather), добавленный администратором канала с правом «Публикация сообщений»;
 - ключ Claude API ([console.anthropic.com](https://console.anthropic.com));
 - **отдельный, не личный** аккаунт Telegram для чтения каналов, а для него `api_id` и `api_hash` с [my.telegram.org](https://my.telegram.org) (раздел API development tools).
 
-## Установка (systemd)
+Ниже везде используется путь к проекту `/Users/david/PycharmProjects/smm`. Если перенесёте папку, замените путь в командах и в файле `deploy/com.kinobot.plist`.
+
+## Установка
+
+В Терминале:
 
 ```bash
-sudo useradd --system --create-home --home-dir /opt/kino-bot kino
-sudo -u kino git clone <адрес репозитория> /opt/kino-bot
-cd /opt/kino-bot
-sudo -u kino python3 -m venv .venv
-sudo -u kino .venv/bin/pip install -r requirements.txt
-sudo -u kino cp .env.example .env
-sudo -u kino nano .env          # заполните настройки, см. ниже
+cd /Users/david/PycharmProjects/smm
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env
+open -e .env          # заполните настройки, см. ниже
 ```
+
+Проверьте, что Python в окружении подходящий: `.venv/bin/python --version` должен показать 3.11 или новее.
 
 ### Подключение аккаунта для чтения каналов
 
-Это делается один раз, в интерактивном режиме:
+Это делается один раз:
 
 ```bash
-cd /opt/kino-bot
-sudo -u kino .venv/bin/python -m kino_bot.login
+cd /Users/david/PycharmProjects/smm
+.venv/bin/python -m kino_bot.login
 ```
 
 Скрипт запросит номер телефона читающего аккаунта, затем код, который Telegram пришлёт в приложение, и пароль, если включена двухэтапная аутентификация. Сессия сохранится в файл `data/reader.session`, после этого бот читает каналы без повторного входа. Скрипт также проверит, что все каналы из `TG_CHANNELS` доступны.
 
-> Файл `*.session` даёт полный доступ к аккаунту. Он не попадает в git (см. `.gitignore`), не передавайте его никому.
+> Файл `*.session` даёт полный доступ к аккаунту. Он не попадает в git (см. `.gitignore`), не передавайте его никому. Чтобы файлы с секретами были видны только вам: `chmod 600 .env data/reader.session`.
 
-### Запуск как службы
+### Пробный запуск
 
 ```bash
-sudo cp deploy/kino-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now kino-bot
-journalctl -u kino-bot -f       # логи
+cd /Users/david/PycharmProjects/smm
+.venv/bin/python -m kino_bot
 ```
 
-После изменения `.env` перезапустите бота: `sudo systemctl restart kino-bot`.
+Отправьте боту `/idea` и проверьте черновик. Логи выводятся прямо в Терминал, остановить бота можно сочетанием Ctrl+C.
+
+В PyCharm бота можно запускать так: Run → Edit Configurations → «+» → Python. В поле Script выберите Module name и укажите `kino_bot`. В Working directory укажите `/Users/david/PycharmProjects/smm`, интерпретатор возьмите из `.venv`.
+
+### Постоянная работа в фоне (launchd)
+
+Чтобы бот запускался при входе в систему и сам перезапускался после падения, подключите его к launchd:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp /Users/david/PycharmProjects/smm/deploy/com.kinobot.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kinobot.plist
+```
+
+Перед этим остановите пробный запуск, иначе две копии бота будут мешать друг другу.
+
+Логи:
+
+```bash
+tail -f ~/Library/Logs/kino-bot.log
+```
+
+Перезапуск после изменения `.env`:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.kinobot
+```
+
+Остановить и убрать из автозапуска:
+
+```bash
+launchctl bootout gui/$(id -u)/com.kinobot
+```
+
+Важно для Mac:
+
+- бот работает, пока вы вошли в систему и Mac не спит. Чтобы ежедневная идея приходила вовремя, в «Системных настройках → Аккумулятор → Параметры» (или «Энергосбережение» на стационарных Mac) включите «Предотвращать автоматический переход в режим сна при выключенном дисплее», а Mac держите подключённым к сети;
+- если Mac всё-таки уснул, бот продолжит работу после пробуждения, а пропущенная ежедневная идея придёт в течение нескольких минут после пробуждения.
 
 ## Установка (Docker)
 
+Нужен [Docker Desktop для Mac](https://www.docker.com/products/docker-desktop/).
+
 ```bash
-cp .env.example .env && nano .env
-mkdir -p data && sudo chown 1000:1000 data
+cd /Users/david/PycharmProjects/smm
+cp .env.example .env && open -e .env
+mkdir -p data
 docker compose build
 docker compose run --rm kino-bot python -m kino_bot.login   # однократный вход
 docker compose up -d
 docker compose logs -f
 ```
+
+Контейнер перезапускается автоматически, пока работает Docker Desktop.
 
 ## Настройки (.env)
 
@@ -106,7 +150,8 @@ docker compose logs -f
 ## Разработка
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+cd /Users/david/PycharmProjects/smm
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest
 ```
