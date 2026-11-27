@@ -19,6 +19,7 @@ from .news import NewsCollector
 from .scheduler import daily_loop, refresh_loop
 from .sources.rss import make_http_client
 from .sources.telegram import TelegramReader
+from .style import StyleProvider
 
 log = logging.getLogger("kino_bot")
 
@@ -56,11 +57,15 @@ async def main() -> None:
         except Exception as exc:  # noqa: BLE001
             log.error("Не удалось подключить аккаунт для чтения каналов: %s", exc)
     else:
-        log.warning("Чтение Telegram-каналов выключено: не заданы TG_API_ID, TG_API_HASH или TG_CHANNELS")
+        log.warning("Чтение Telegram-каналов выключено: не заданы TG_API_ID, TG_API_HASH или "
+                    "TG_CHANNELS/STYLE_CHANNEL")
 
     collector = NewsCollector(config.feeds, http, tg_reader, config.max_age_hours)
-    writer = PostWriter(config.anthropic_api_key, config.model, config.effort, config.channel_style)
-    generator = Generator(collector, writer, ImageFinder(http, tg_reader), config.show_source)
+    writer = PostWriter(config.anthropic_api_key, config.model, config.effort, config.channel_style,
+                        config.post_max_len)
+    style = StyleProvider(tg_reader, config.style_channel, config.style_examples, config.style_file)
+    generator = Generator(collector, writer, ImageFinder(http, tg_reader), config.show_source,
+                          style=style, max_len=config.post_max_len)
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True))
     app = KinoBot(bot, generator, config.channel_id, config.admin_ids)

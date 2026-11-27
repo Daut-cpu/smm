@@ -31,6 +31,9 @@ async def main() -> None:
     from .config import _normalize_channel, _split
 
     channels = [_normalize_channel(c) for c in _split(os.environ.get("TG_CHANNELS"))]
+    style_channel = os.environ.get("STYLE_CHANNEL", "").strip()
+    if style_channel and _normalize_channel(style_channel) not in channels:
+        channels.append(_normalize_channel(style_channel))
     for channel in channels:
         try:
             entity = await client.get_entity(channel)

@@ -7,11 +7,12 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 
-from .formatting import first_paragraph, fit_post, sanitize_html, source_link
+from .formatting import first_paragraph, fit_post, sanitize_html, source_link, strip_hashtags
 from .images import Image, ImageFinder
 from .llm import LLMError, PostWriter
 from .models import NewsItem
 from .news import NewsCollector
+from .style import StyleProvider
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +63,11 @@ class History:
 
 
 class Generator:
-    def __init__(self, collector: NewsCollector, writer: PostWriter, images: ImageFinder, show_source: bool):
+    def __init__(self, collector: NewsCollector, writer: PostWriter, images: ImageFinder, show_source: bool,
+                 style: StyleProvider | None = None, max_len: int = 800):
         self.collector = collector
+        self.style = style
+        self.max_len = max_len
         self.writer = writer
         self.images = images
         self.show_source = show_source
@@ -75,6 +79,7 @@ class Generator:
             news = await self.collector.get_news()
             if not news:
                 raise NoNewsError()
+            examples = await self.style.get() if self.style else []
             # Не больше двух запросов: второй — только если модель отвергла всю первую порцию.
             for _ in range(2):
                 candidates = [n for n in news if not self.history.is_used(n)]
@@ -82,20 +87,21 @@ class Generator:
                     self.history.reset()
                     raise CandidatesExhaustedError()
                 batch = candidates[:40]
-                choice = await self.writer.choose_and_write(batch, self.history.topics)
+                choice = await self.writer.choose_and_write(batch, self.history.topics, examples)
                 if choice is None:
                     log.info("Модель не нашла подходящих новостей среди %d кандидатов", len(batch))
                     for n in batch:
                         self.history.used_keys.add(n.key)
                     continue
-                text = sanitize_html(choice.post)
+                text = strip_hashtags(sanitize_html(choice.post))
                 if not text:
                     raise LLMError("После очистки текст поста оказался пустым")
-                text = fit_post(text)
-                topic = choice.topic or first_paragraph(text)
+                text = fit_post(text, self.max_len)
+                opening = first_paragraph(text)[:150]
+                topic = choice.topic or opening
                 self.history.add(choice.item, topic)
-                if first_paragraph(text) and first_paragraph(text) != topic:
-                    self.history.topics.append(first_paragraph(text))
+                if opening and opening != topic:
+                    self.history.topics.append(opening)
                 break
             else:
                 self.history.reset()

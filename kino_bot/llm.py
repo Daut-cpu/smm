@@ -49,16 +49,34 @@ SYSTEM_PROMPT = """Ты — редактор русскоязычного Telegr
 Как писать пост:
 - Только на русском, даже если новость на английском.
 - Названия фильмов и сериалов — как в российском прокате, в «ёлочках»; если русское название неизвестно, оставь оригинальное.
-- Структура: первый абзац — цепляющий заголовок целиком в <b>…</b>; затем 1–2 коротких абзаца текста; в конце отдельной строкой 2–4 хэштега (#кино, #трейлер, #НазваниеФильма и т. п.). Абзацы разделяй пустой строкой.
-- Длина всего поста вместе с хэштегами — не больше 750 знаков.
+- Без заголовка: не выделяй первую строку как заголовок, сразу начинай с текста.
+- Без хэштегов: ни одного символа # в посте.
+- Длина поста — не больше {max_len} знаков.
 - Только факты из исходной новости: не придумывай даты, цифры, имена и цитаты, которых в ней нет.
-- Если новость взята из Telegram-канала, перескажи её своими словами, не копируй фразы. Удали чужие подписи, ссылки, призывы подписаться, упоминания @каналов и хэштеги источника.
-- Форматирование — только HTML-теги <b> и <i>. Никакого markdown, ссылок и других тегов. Ссылку на источник бот добавит сам.
+- Если новость взята из Telegram-канала, перескажи её своими словами, не копируй фразы. Удали чужие подписи, ссылки, призывы подписаться и упоминания @каналов.
+- Форматирование — только HTML-теги <b> и <i>, и только если они есть в манере канала. Никакого markdown, ссылок и других тегов. Ссылку на источник бот добавит сам.
 
 Стиль и аудитория канала:
 {style}
-
+{examples}
 Ответ — строго JSON по схеме: index (номер новости из списка), topic (короткое описание сюжета), post (текст поста)."""
+
+EXAMPLES_BLOCK = """
+Ниже — посты канала, на которые нужно равняться. Пиши новый пост в точно такой же подаче: так же начинай пост, так же строй и разбивай на абзацы текст, держи ту же длину предложений и абзацев, то же обращение к читателю (на «ты» или на «вы»), ту же лексику, интонацию, юмор, то же количество и расположение эмодзи и то же форматирование. Если в образцах нет эмодзи или жирного шрифта, не используй их.
+Перенимай только манеру. Не копируй из образцов предложения, факты, имена, подписи, ссылки и упоминания автора или канала. Правила «без заголовка» и «без хэштегов» важнее образцов.
+
+<examples>
+{items}
+</examples>
+"""
+
+
+def build_system_prompt(style: str, examples: list[str], max_len: int) -> str:
+    block = ""
+    if examples:
+        items = "\n".join(f"<example>\n{e}\n</example>" for e in examples)
+        block = EXAMPLES_BLOCK.format(items=items)
+    return SYSTEM_PROMPT.format(style=style, examples=block, max_len=max(200, max_len - 50))
 
 
 class LLMError(Exception):
@@ -130,19 +148,23 @@ def parse_response(text: str, candidates: list[NewsItem]) -> LLMChoice | None:
 
 
 class PostWriter:
-    def __init__(self, api_key: str, model: str, effort: str, style: str):
+    def __init__(self, api_key: str, model: str, effort: str, style: str, max_len: int = 800):
         self.client = anthropic.AsyncAnthropic(api_key=api_key, timeout=60.0, max_retries=1)
         self.model = model
         self.effort = effort
-        self.system = SYSTEM_PROMPT.format(style=style)
+        self.style = style
+        self.max_len = max_len
 
-    async def choose_and_write(self, candidates: list[NewsItem], previous_topics: list[str]) -> LLMChoice | None:
+    async def choose_and_write(self, candidates: list[NewsItem], previous_topics: list[str],
+                               examples: list[str] | None = None) -> LLMChoice | None:
         candidates = candidates[:MAX_CANDIDATES]
         prompt = build_user_prompt(candidates, previous_topics)
+        system = build_system_prompt(self.style, examples or [], self.max_len)
         params = dict(
             model=self.model,
             max_tokens=8000,
-            system=self.system,
+            # Образцы стиля меняются раз в сутки — кешируем системный промпт, чтобы не платить за них заново
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": prompt}],
             output_config={
                 "effort": self.effort,

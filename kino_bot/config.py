@@ -25,8 +25,7 @@ DEFAULT_FEEDS = [
 
 DEFAULT_STYLE = (
     "Канал про кино и сериалы для широкой русскоязычной аудитории. "
-    "Тон живой, дружелюбный, с лёгким юмором, без канцелярита и кликбейта. "
-    "1–2 уместных эмодзи на пост, 2–4 хэштега в конце."
+    "Тон живой, дружелюбный, с лёгким юмором, без канцелярита и кликбейта."
 )
 
 
@@ -71,10 +70,14 @@ class Config:
     show_source: bool = True
     model: str = "claude-sonnet-5-5"
     effort: str = "low"
+    style_channel: str | None = None
+    style_examples: int = 15
+    style_file: str | None = "style_examples.txt"
+    post_max_len: int = 800
 
     @property
     def telegram_reader_enabled(self) -> bool:
-        return bool(self.tg_api_id and self.tg_api_hash and self.tg_channels)
+        return bool(self.tg_api_id and self.tg_api_hash and (self.tg_channels or self.style_channel))
 
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = ".env") -> "Config":
@@ -127,6 +130,15 @@ class Config:
         if effort not in {"low", "medium", "high", "xhigh", "max"}:
             raise ConfigError("EFFORT должен быть одним из: low, medium, high, xhigh, max")
 
+        try:
+            style_examples = int(env.get("STYLE_EXAMPLES", "").strip() or 15)
+            post_max_len = int(env.get("POST_MAX_LEN", "").strip() or 800)
+        except ValueError as exc:
+            raise ConfigError("STYLE_EXAMPLES и POST_MAX_LEN должны быть числами") from exc
+        if not 200 <= post_max_len <= 4000:
+            raise ConfigError("POST_MAX_LEN должен быть от 200 до 4000")
+        style_channel_raw = env.get("STYLE_CHANNEL", "").strip()
+
         feeds_raw = env.get("FEEDS")
         feeds = _split(feeds_raw) if feeds_raw and feeds_raw.strip() else list(DEFAULT_FEEDS)
 
@@ -147,4 +159,8 @@ class Config:
             show_source=_bool(env.get("SHOW_SOURCE"), True),
             model=env.get("MODEL", "").strip() or "claude-sonnet-5-5",
             effort=effort,
+            style_channel=_normalize_channel(style_channel_raw) if style_channel_raw else None,
+            style_examples=max(0, min(style_examples, 40)),
+            style_file=env.get("STYLE_FILE", "").strip() or "style_examples.txt",
+            post_max_len=post_max_len,
         )

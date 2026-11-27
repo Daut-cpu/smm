@@ -151,8 +151,48 @@ class TelegramReader:
             messages.append(msg)
         return build_items(channel, messages, self.max_age_hours)
 
+    async def fetch_style_posts(self, channel: str, limit: int) -> list[str]:
+        """Последние посты канала-образца для подражания стилю."""
+        if not self.ready:
+            return []
+        messages = [m async for m in self._client.iter_messages(channel, limit=max(60, limit * 4))]
+        return pick_style_posts(messages, limit)
+
     async def download_photo(self, item: NewsItem) -> bytes | None:
         if not self.ready or item.tg_photo_message is None:
             return None
         data = await self._client.download_media(item.tg_photo_message, file=bytes)
         return data if isinstance(data, (bytes, bytearray)) else None
+
+
+def message_html(msg) -> str:
+    """Текст сообщения с форматированием (жирный, курсив и т. п.) в виде HTML."""
+    text = msg.message or ""
+    entities = getattr(msg, "entities", None)
+    if not entities:
+        return text
+    try:
+        from telethon.extensions import html as tl_html
+
+        return tl_html.unparse(text, entities)
+    except Exception:  # noqa: BLE001 — без форматирования тоже годится
+        return text
+
+
+def pick_style_posts(messages: list, limit: int, min_len: int = 80) -> list[str]:
+    """Отбирает посты-образцы стиля: с текстом, без рекламы и пересылок, не слишком короткие."""
+    posts: list[str] = []
+    seen_albums: set = set()
+    for msg in messages:
+        text = (msg.message or "").strip()
+        if len(text) < min_len or is_ad(text) or getattr(msg, "fwd_from", None):
+            continue
+        album = getattr(msg, "grouped_id", None)
+        if album:
+            if album in seen_albums:
+                continue
+            seen_albums.add(album)
+        posts.append(message_html(msg))
+        if len(posts) >= limit:
+            break
+    return posts

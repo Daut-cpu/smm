@@ -158,6 +158,19 @@ def fit_post(text: str, limit: int = MAX_POST_LEN) -> str:
     return f"{body}\n\n{tags}" if tags else body
 
 
+_HASHTAG_RE = re.compile(r"(?<![\w&])#[\w]+")
+
+
+def strip_hashtags(text: str) -> str:
+    """Удаляет хэштеги, если модель всё же их добавила, и пустые строки после них."""
+    text = _HASHTAG_RE.sub("", text)
+    text = re.sub(r"<(b|i|u|s)>\s*</\1>", "", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def first_paragraph(text: str) -> str:
     plain = visible_text(text).strip()
     return plain.split("\n", 1)[0].strip()
