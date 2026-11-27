@@ -48,7 +48,7 @@ HELP_TEXT = (
     "• пересланный пост из другого канала;\n"
     "• фото с подписью: фото станет картинкой поста.\n\n"
     "Под черновиком три кнопки:\n"
-    "👍 <b>Супер</b> — опубликовать в канал\n"
+    "✅ <b>Опубликовать</b> — отправить пост в канал\n"
     "🔄 <b>Придумай ещё</b> — пост по другой новости\n"
     "✖️ <b>Отмена</b> — удалить черновик"
 )
@@ -59,7 +59,7 @@ def draft_keyboard(draft_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="👍 Супер", callback_data=f"pub:{draft_id}"),
+                InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"pub:{draft_id}"),
                 InlineKeyboardButton(text="🔄 Придумай ещё", callback_data=f"more:{draft_id}"),
             ],
             [InlineKeyboardButton(text="✖️ Отмена", callback_data=f"cancel:{draft_id}")],
@@ -209,7 +209,7 @@ class KinoBot:
                 await self.bot.send_message(
                     draft.chat_id,
                     f"❌ Не удалось опубликовать пост: {_describe_publish_error(exc)}\n\n"
-                    "Черновик сохранён — после исправления нажмите «Супер» ещё раз.",
+                    "Черновик сохранён — после исправления нажмите «Опубликовать» ещё раз.",
                 )
                 return
             self.drafts.pop(draft.id)
