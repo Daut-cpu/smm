@@ -19,6 +19,8 @@ class FakeWriter:
     def __init__(self, fail_write=False, fail_review=False):
         self.select_calls, self.write_calls, self.review_calls = [], [], []
         self.fail_write, self.fail_review = fail_write, fail_review
+        self.limits = []
+        self.long = False
 
     async def select(self, candidates, topics, digest=False):
         self.select_calls.append(([c.title for c in candidates], list(topics), digest))
@@ -31,13 +33,16 @@ class FakeWriter:
     async def build_profile(self, examples):
         return "профиль"
 
-    async def write(self, docs, fmt, topic, profile, examples, recent):
+    async def write(self, docs, fmt, topic, profile, examples, recent, max_len=None):
         self.write_calls.append((docs, fmt, topic, profile, examples, list(recent)))
+        self.limits.append(max_len)
         if self.fail_write:
             raise LLMError("сбой")
+        if self.long:
+            return Written(post="Длинная фраза про кино и сериалы. " * 60, facts=[], angle="", format="news")
         return Written(post=f"Текст про {topic} <a href='x'>x</a> #кино", facts=["факт"], angle="угол", format=fmt or "news")
 
-    async def review(self, docs, written, profile, recent):
+    async def review(self, docs, written, profile, recent, max_len=None):
         self.review_calls.append(written.post)
         if self.fail_review:
             raise LLMError("сбой проверки")
@@ -135,3 +140,16 @@ async def test_from_material():
     assert d.mode == "material" and d.docs == docs
     assert w.write_calls[0][1] == ""  # формат выбирает модель
     assert "Источник" not in d.text  # у заметок автора нет ссылки
+
+
+async def test_post_with_link_fits_photo_caption():
+    from kino_bot.formatting import CAPTION_LIMIT, visible_len
+
+    g, w = gen(n=6, review=False)
+    w.long = True
+    d = await g.generate(1)
+    assert w.limits == [990]  # 1000 минус место под ссылку «Источник»
+    assert visible_len(d.text) <= 1000 <= CAPTION_LIMIT
+    assert d.text.endswith("Источник</a>")
+    d2 = await g.generate_digest(1)
+    assert w.limits[-1] == 1000  # у подборки ссылки нет

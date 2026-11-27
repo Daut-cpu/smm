@@ -74,7 +74,7 @@ class Config:
     style_examples: int = 15
     style_file: str | None = "style_examples.txt"
     style_profile_file: str | None = None
-    post_max_len: int = 2000
+    post_max_len: int = 1000
     author_gender: str | None = None
     review: bool = True
 
@@ -135,11 +135,14 @@ class Config:
 
         try:
             style_examples = int(env.get("STYLE_EXAMPLES", "").strip() or 15)
-            post_max_len = int(env.get("POST_MAX_LEN", "").strip() or 2000)
+            post_max_len = int(env.get("POST_MAX_LEN", "").strip() or 1000)
         except ValueError as exc:
             raise ConfigError("STYLE_EXAMPLES и POST_MAX_LEN должны быть числами") from exc
-        if not 200 <= post_max_len <= 4000:
-            raise ConfigError("POST_MAX_LEN должен быть от 200 до 4000")
+        if not 300 <= post_max_len <= 4000:
+            raise ConfigError("POST_MAX_LEN должен быть от 300 до 4000")
+        if post_max_len > 1024:
+            log.warning("POST_MAX_LEN=%d больше подписи к фото (1024): длинные посты уйдут двумя сообщениями — "
+                        "сначала фото, потом текст", post_max_len)
         style_channel_raw = env.get("STYLE_CHANNEL", "").strip()
         gender_raw = env.get("AUTHOR_GENDER", "").strip().lower()
         gender_map = {"f": "f", "ж": "f", "female": "f", "жен": "f", "m": "m", "м": "m", "male": "m", "муж": "m"}

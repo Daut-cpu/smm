@@ -184,3 +184,12 @@ async def test_short_text_gets_hint_not_material():
     await app.any_text(m)
     assert "/idea" in m.replies[0]
     assert app.generator.calls == []
+
+
+async def test_caption_sized_post_is_one_message():
+    from kino_bot.bot import send_post
+
+    bot = FakeBot()
+    text = "а" * 1000
+    msgs, file_id = await send_post(bot, ADMIN, text, "photo-id")
+    assert len(msgs) == 1 and bot.sent[0][1] == "photo" and bot.sent[0][2] == text

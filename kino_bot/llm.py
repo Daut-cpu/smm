@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import anthropic
 
 from . import prompts
+from .formatting import visible_len
 from .models import NewsItem
 
 log = logging.getLogger(__name__)
@@ -181,7 +182,9 @@ def build_writer_prompt(docs: list[SourceDoc], fmt: str, topic: str, max_len: in
         (f"Рекомендуемый формат: {fmt} — {prompts.FORMATS.get(fmt, '')}. "
          "Если материалы явно просят другой формат, выбери его.") if fmt else
         "Формат выбери сам — тот, который лучше всего раскроет материал.",
-        f"Длина: ориентируйся на типичную длину постов автора, но не больше {max_len} знаков.",
+        (f"Длина: строго не больше {max(300, max_len - 80)} знаков с пробелами. Пост публикуется подписью "
+         "к фотографии, поэтому это жёсткий предел, даже если посты автора обычно длиннее. Сохраняй манеру, "
+         "но рассказывай компактнее: меньше второстепенных деталей, а заход, мнение и финал оставь."),
     ]
     if channel_style:
         parts.append(f"Пожелания владельца канала: {channel_style}")
@@ -194,8 +197,15 @@ def build_writer_prompt(docs: list[SourceDoc], fmt: str, topic: str, max_len: in
     return "\n".join(p for p in parts if p is not None)
 
 
-def build_review_prompt(docs: list[SourceDoc], draft: str, facts: list[str], recent_posts: list[str]) -> str:
+def build_review_prompt(docs: list[SourceDoc], draft: str, facts: list[str], recent_posts: list[str],
+                        max_len: int | None = None) -> str:
     parts = ["Материалы:", render_materials(docs), "", "Черновик поста:", "<draft>", draft, "</draft>"]
+    if max_len:
+        current = visible_len(draft)
+        target = max(300, max_len - 80)
+        parts += ["", f"Предел длины поста: {target} знаков с пробелами (пост идёт подписью к фото). "
+                      f"Сейчас в черновике около {current} знаков."
+                      + (" Сократи пост до предела." if current > target else " Длина в порядке.")]
     if facts:
         parts += ["", "Факты, на которые опирался автор черновика (их тоже сверь с материалами):"]
         parts += [f"- {f}" for f in facts]
@@ -213,7 +223,7 @@ def _text_of(response) -> str:
 
 
 class PostWriter:
-    def __init__(self, api_key: str, model: str, effort: str, channel_style: str = "", max_len: int = 2000,
+    def __init__(self, api_key: str, model: str, effort: str, channel_style: str = "", max_len: int = 1000,
                  gender: str | None = None):
         self.client = anthropic.AsyncAnthropic(api_key=api_key, timeout=120.0, max_retries=1)
         self.model = model
@@ -299,9 +309,9 @@ class PostWriter:
         return text.strip()
 
     async def write(self, docs: list[SourceDoc], fmt: str, topic: str, profile: str, examples: list[str],
-                    recent_posts: list[str]) -> Written:
+                    recent_posts: list[str], max_len: int | None = None) -> Written:
         system = build_writer_system(profile, examples, self.gender)
-        user = build_writer_prompt(docs, fmt, topic, self.max_len, recent_posts, self.channel_style)
+        user = build_writer_prompt(docs, fmt, topic, max_len or self.max_len, recent_posts, self.channel_style)
         data = await self._call_json(system, user, self.effort, prompts.WRITER_SCHEMA)
         post = data.get("post")
         if not isinstance(post, str) or not post.strip():
@@ -313,12 +323,12 @@ class PostWriter:
         return Written(post=post.strip(), facts=facts, angle=angle, format=fmt_out)
 
     async def review(self, docs: list[SourceDoc], written: Written, profile: str,
-                     recent_posts: list[str]) -> Reviewed:
+                     recent_posts: list[str], max_len: int | None = None) -> Reviewed:
         profile_block = prompts.WRITER_PROFILE_BLOCK.format(profile=profile) if profile else ""
         system = prompts.REVIEW_SYSTEM.format(
             author=prompts.WRITER_AUTHOR_GENDER.get(self.gender or "", ""), profile=profile_block
         )
-        user = build_review_prompt(docs, written.post, written.facts, recent_posts)
+        user = build_review_prompt(docs, written.post, written.facts, recent_posts, max_len or self.max_len)
         data = await self._call_json(system, user, self.effort, prompts.REVIEW_SCHEMA)
         post = data.get("post")
         if not isinstance(post, str) or not post.strip():

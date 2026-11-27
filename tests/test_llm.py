@@ -68,7 +68,7 @@ def test_writer_prompt_materials_and_recent():
             SourceDoc(kind="site", source="variety.com", text="Full text", title="T", url="https://v.com/1")]
     p = build_writer_prompt(docs, "", "", 1500, ["Начало … финал"], "на ты")
     assert "заметки автора" in p and "https://v.com/1" in p and "Заголовок: T" in p
-    assert "Формат выбери сам" in p and "не больше 1500 знаков" in p
+    assert "Формат выбери сам" in p and "не больше 1420 знаков" in p
     assert "Начало … финал" in p and "на ты" in p
     p2 = build_writer_prompt(docs, "review", "Тема", 1500, [], "")
     assert "Рекомендуемый формат: review" in p2 and "Повод: Тема" in p2
@@ -88,3 +88,11 @@ def test_find_cliches():
 def test_prompts_format_without_errors():
     prompts.SELECT_SYSTEM.format(formats=prompts.formats_text())
     prompts.REVIEW_SYSTEM.format(author="", profile="")
+
+
+def test_length_limit_in_prompts():
+    docs = [SourceDoc(kind="site", source="x", text="t")]
+    assert "не больше 920 знаков" in build_writer_prompt(docs, "", "", 1000, [], "")
+    p = build_review_prompt(docs, "слово " * 300, [], [], max_len=1000)
+    assert "Предел длины поста: 920" in p and "Сократи пост до предела" in p
+    assert "Длина в порядке" in build_review_prompt(docs, "коротко", [], [], max_len=1000)

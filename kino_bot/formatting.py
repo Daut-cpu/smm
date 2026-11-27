@@ -176,5 +176,8 @@ def first_paragraph(text: str) -> str:
     return plain.split("\n", 1)[0].strip()
 
 
+SOURCE_LINK_TEXT = "Источник"
+
+
 def source_link(url: str) -> str:
-    return f'<a href="{html.escape(url, quote=True)}">Источник</a>'
+    return f'<a href="{html.escape(url, quote=True)}">{SOURCE_LINK_TEXT}</a>'

@@ -12,7 +12,16 @@ from typing import Awaitable, Callable
 import httpx
 
 from .articles import fetch_article
-from .formatting import first_paragraph, fit_post, sanitize_html, source_link, strip_hashtags, visible_text
+from .formatting import (
+    SOURCE_LINK_TEXT,
+    first_paragraph,
+    fit_post,
+    sanitize_html,
+    source_link,
+    strip_hashtags,
+    visible_len,
+    visible_text,
+)
 from .images import Image, ImageFinder
 from .llm import LLMError, PostWriter, Selection, SourceDoc, find_cliches
 from .models import NewsItem
@@ -96,7 +105,7 @@ async def _noop(_: str) -> None:
 
 class Generator:
     def __init__(self, collector: NewsCollector, writer: PostWriter, images: ImageFinder, show_source: bool,
-                 style: StyleProvider | None = None, max_len: int = 2000, http: httpx.AsyncClient | None = None,
+                 style: StyleProvider | None = None, max_len: int = 1000, http: httpx.AsyncClient | None = None,
                  review: bool = True):
         self.collector = collector
         self.writer = writer
@@ -123,7 +132,8 @@ class Generator:
                                      source_url: str = "", progress: Progress | None = None) -> Draft:
         """Пост по материалу, который прислал администратор: ссылка, текст, заметки, пересланный пост."""
         progress = progress or _noop
-        text, fmt = await self._write(docs, "", "", progress)
+        with_link = bool(self.show_source and source_url)
+        text, fmt = await self._write(docs, "", "", progress, self._body_limit(with_link))
         if image is None and source_url:
             await progress("🖼 Подбираю картинку…")
             image = await self._image_for_url(source_url)
@@ -151,7 +161,9 @@ class Generator:
         items = [selection.main, *selection.related]
         try:
             docs = await self._collect_docs(items)
-            text, fmt = await self._write(docs, selection.format, selection.topic, progress)
+            with_link = bool(self.show_source and selection.main.link and not digest)
+            text, fmt = await self._write(docs, selection.format, selection.topic, progress,
+                                          self._body_limit(with_link))
         except Exception:
             # пост не получился — возвращаем материалы в оборот, чтобы повтор мог их взять
             for item in items:
@@ -217,16 +229,21 @@ class Generator:
         profile = await self.style.profile(self.writer, examples)
         return profile, examples
 
-    async def _write(self, docs: list[SourceDoc], fmt: str, topic: str, progress: Progress) -> tuple[str, str]:
+    def _body_limit(self, with_link: bool) -> int:
+        """Предел длины текста без ссылки «Источник», чтобы пост целиком уместился в подпись к фото."""
+        return self.max_len - (len(SOURCE_LINK_TEXT) + 2 if with_link else 0)
+
+    async def _write(self, docs: list[SourceDoc], fmt: str, topic: str, progress: Progress,
+                     limit: int) -> tuple[str, str]:
         profile, examples = await self._style()
         await progress("✍️ Пишу пост…")
         recent = list(self.history.recent_posts)
-        written = await self.writer.write(docs, fmt, topic, profile, examples, recent)
+        written = await self.writer.write(docs, fmt, topic, profile, examples, recent, max_len=limit)
         post = written.post
         if self.review:
             await progress("🧐 Проверяю факты и стиль…")
             try:
-                reviewed = await self.writer.review(docs, written, profile, recent)
+                reviewed = await self.writer.review(docs, written, profile, recent, max_len=limit)
                 if reviewed.issues:
                     log.info("Редактор исправил: %s", "; ".join(reviewed.issues))
                 post = reviewed.post
@@ -238,7 +255,9 @@ class Generator:
         leftovers = find_cliches(text)
         if leftovers:
             log.warning("В посте остались шаблонные обороты: %s", ", ".join(leftovers))
-        text = fit_post(text, self.max_len)
+        if visible_len(text) > limit:
+            log.warning("Пост длиннее предела (%d > %d), обрезаю по границе предложения", visible_len(text), limit)
+        text = fit_post(text, limit)
         self.history.add_post(text)
         return text, written.format
 
