@@ -66,7 +66,7 @@ def build_items(channel: str, messages: list, max_age_hours: float, now: datetim
                 source=f"@{channel}",
                 kind="tg",
                 title=make_title(text),
-                summary=text[:1500],
+                summary=text[:4000],
                 link=f"https://t.me/{channel}/{group[0].id}",
                 published=text_msg.date,
                 tg_photo_ref=(channel, photo_msg.id) if photo_msg else None,

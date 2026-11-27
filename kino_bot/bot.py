@@ -17,19 +17,36 @@ from aiogram.types import (
 )
 
 from .formatting import CAPTION_LIMIT, visible_len
-from .generator import CandidatesExhaustedError, Draft, DraftStore, Generator, NoNewsError
+import httpx
+
+from .generator import (
+    CandidatesExhaustedError,
+    Draft,
+    DraftStore,
+    Generator,
+    NoNewsError,
+    NotEnoughForDigestError,
+)
 from .llm import LLMError
+from .material import Material, build_material, looks_like_material
 
 log = logging.getLogger(__name__)
 
 STATUS_TEXT = "🔎 Ищу свежие новости и пишу пост…"
 HELP_TEXT = (
     "Я помогаю вести канал про кино: нахожу свежие новости на киносайтах и в Telegram-каналах "
-    "и предлагаю готовый пост с картинкой.\n\n"
+    "и пишу по ним авторский пост в стиле канала.\n\n"
     "Команды:\n"
-    "/idea — черновик по самой интересной свежей новости\n"
+    "/idea — пост по самому интересному свежему поводу\n"
+    "/digest — подборка премьер\n"
     "/myid — показать ваш Telegram id\n"
     "/help — эта подсказка\n\n"
+    "А ещё можно прислать мне материал, и я напишу пост по нему:\n"
+    "• ссылку на статью, интервью или рецензию;\n"
+    "• текст или свои заметки, например впечатления после показа или мероприятия, "
+    "только с ними я могу писать от лица человека, который сам что-то видел;\n"
+    "• пересланный пост из другого канала;\n"
+    "• фото с подписью: фото станет картинкой поста.\n\n"
     "Под черновиком три кнопки:\n"
     "👍 <b>Супер</b> — опубликовать в канал\n"
     "🔄 <b>Придумай ещё</b> — пост по другой новости\n"
@@ -77,8 +94,10 @@ async def send_post(bot: Bot, chat_id: int | str, text: str, photo: BufferedInpu
 
 
 class KinoBot:
-    def __init__(self, bot: Bot, generator: Generator, channel_id: int | str, admin_ids: set[int]):
+    def __init__(self, bot: Bot, generator: Generator, channel_id: int | str, admin_ids: set[int],
+                 http: httpx.AsyncClient | None = None):
         self.bot = bot
+        self.http = http
         self.generator = generator
         self.channel_id = channel_id
         self.admin_ids = admin_ids
@@ -101,6 +120,7 @@ class KinoBot:
         r.message.register(self.cmd_start, Command("help"))
         r.message.register(self.cmd_myid, Command("myid"))
         r.message.register(self.cmd_idea, Command("idea"))
+        r.message.register(self.cmd_digest, Command("digest"))
         r.message.register(self.any_text)
         r.callback_query.register(self.on_publish, F.data.startswith("pub:"))
         r.callback_query.register(self.on_more, F.data.startswith("more:"))
@@ -129,11 +149,32 @@ class KinoBot:
             return
         await self.make_draft(message.chat.id)
 
+    async def cmd_digest(self, message: Message) -> None:
+        if not self.is_admin(message.from_user and message.from_user.id):
+            await message.answer(NO_ACCESS)
+            return
+        if message.chat.id in self._busy:
+            await message.answer("Уже готовлю пост, подождите.")
+            return
+        await self.make_draft(message.chat.id, mode="digest")
+
     async def any_text(self, message: Message) -> None:
         if not self.is_admin(message.from_user and message.from_user.id):
             await message.answer(NO_ACCESS)
             return
-        await message.answer("Чтобы получить идею поста, отправьте /idea.\nВсе команды: /help")
+        # Фото из альбома без подписи — часть того же сообщения, отвечать на каждое не нужно
+        if message.media_group_id and not message.caption:
+            return
+        if looks_like_material(message) and self.http is not None:
+            if message.chat.id in self._busy:
+                await message.answer("Уже готовлю пост, подождите и пришлите материал ещё раз.")
+                return
+            await self.make_draft(message.chat.id, mode="material", source_message=message)
+            return
+        await message.answer(
+            "Чтобы получить пост, отправьте /idea или /digest, "
+            "либо пришлите ссылку, текст или заметки (от 60 знаков).\nВсе команды: /help"
+        )
 
     async def _check_callback(self, query: CallbackQuery) -> Draft | None:
         if not self.is_admin(query.from_user.id):
@@ -187,7 +228,12 @@ class KinoBot:
         self.drafts.pop(draft.id)
         if draft.keyboard_message_id:
             await self._remove_keyboard(draft.chat_id, draft.keyboard_message_id)
-        await self.make_draft(draft.chat_id)
+        if draft.mode == "material":
+            # новый вариант по тому же материалу
+            await self.make_draft(draft.chat_id, mode="material",
+                                  material=Material(docs=draft.docs, image=draft.image, source_url=draft.source_url))
+        else:
+            await self.make_draft(draft.chat_id, mode=draft.mode)
 
     async def on_cancel(self, query: CallbackQuery) -> None:
         draft = await self._check_callback(query)
@@ -206,16 +252,51 @@ class KinoBot:
         await query.answer("Черновик уже неактуален", show_alert=True)
 
     # --- генерация черновика ----------------------------------------------------
-    async def make_draft(self, chat_id: int) -> None:
+    async def make_draft(self, chat_id: int, mode: str = "auto", source_message: Message | None = None,
+                         material: Material | None = None) -> None:
         if chat_id in self._busy:
             return
         self._busy.add(chat_id)
         status = None
         try:
-            status = await self.bot.send_message(chat_id, STATUS_TEXT)
+            first = "📥 Разбираю материал…" if mode == "material" else STATUS_TEXT
+            status = await self.bot.send_message(chat_id, first)
+            last_text = first
+
+            async def progress(text: str) -> None:
+                nonlocal last_text
+                if status is None or text == last_text:
+                    return
+                last_text = text
+                try:
+                    await self.bot.edit_message_text(text, chat_id=chat_id, message_id=status.message_id)
+                except TelegramAPIError:
+                    pass
+
             typing = asyncio.create_task(self._keep_typing(chat_id))
             try:
-                draft = await self.generator.generate(chat_id)
+                if mode == "material":
+                    if material is None:
+                        material = await build_material(source_message, self.bot, self.http)
+                    if not material.docs:
+                        await self.bot.send_message(
+                            chat_id,
+                            "Не получилось открыть ссылку"
+                            + (f" ({', '.join(material.failed_urls)})" if material.failed_urls else "")
+                            + ". Пришлите текст статьи или свои заметки сообщением.",
+                        )
+                        return
+                    if material.failed_urls:
+                        await self.bot.send_message(
+                            chat_id, "Не открылась ссылка: " + ", ".join(material.failed_urls)
+                            + ". Пишу по остальному материалу.")
+                    draft = await self.generator.generate_from_material(
+                        chat_id, material.docs, image=material.image, source_url=material.source_url,
+                        progress=progress)
+                elif mode == "digest":
+                    draft = await self.generator.generate_digest(chat_id, progress=progress)
+                else:
+                    draft = await self.generator.generate(chat_id, progress=progress)
             finally:
                 typing.cancel()
             await self._send_draft(draft)
@@ -223,6 +304,10 @@ class KinoBot:
             await self.bot.send_message(
                 chat_id, "Свежих новостей пока нет: источники пусты или недоступны. Попробуйте позже — /idea"
             )
+        except NotEnoughForDigestError:
+            await self.bot.send_message(
+                chat_id, "Для подборки сейчас не набирается хотя бы трёх свежих премьер. Попробуйте позже "
+                         "или возьмите один повод — /idea")
         except CandidatesExhaustedError:
             await self.bot.send_message(
                 chat_id,

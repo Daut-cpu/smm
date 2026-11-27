@@ -1,7 +1,6 @@
 from types import SimpleNamespace as NS
 
 from kino_bot.formatting import strip_hashtags
-from kino_bot.llm import build_system_prompt
 from kino_bot.sources.telegram import pick_style_posts
 from kino_bot.style import clean_example, load_style_file
 
@@ -43,10 +42,30 @@ def test_load_style_file(tmp_path):
     assert load_style_file(tmp_path / "missing.txt") == []
 
 
-def test_system_prompt_with_and_without_examples():
-    with_ex = build_system_prompt("стиль {не шаблон}", ["Пример {1}"], 800)
-    assert "<example>\nПример {1}\n</example>" in with_ex
-    assert "не больше 750 знаков" in with_ex and "стиль {не шаблон}" in with_ex
-    without = build_system_prompt("стиль", [], 800)
-    assert "<examples>" not in without
-    assert "Без хэштегов" in without and "Без заголовка" in without
+async def test_profile_cached_on_disk_and_rebuilt_on_change(tmp_path):
+    from kino_bot.style import StyleProvider
+
+    class W:
+        calls = 0
+
+        async def build_profile(self, examples):
+            W.calls += 1
+            return f"профиль {len(examples)}"
+
+    cache = tmp_path / "profile.md"
+    sp = StyleProvider(None, None, 5, None, profile_cache=str(cache))
+    assert await sp.profile(W(), ["a", "b"]) == "профиль 2"
+    assert cache.read_text(encoding="utf-8").startswith("<!-- examples-hash:")
+    sp2 = StyleProvider(None, None, 5, None, profile_cache=str(cache))  # «перезапуск» бота
+    assert await sp2.profile(W(), ["a", "b"]) == "профиль 2" and W.calls == 1
+    assert await sp2.profile(W(), ["a", "b", "c"]) == "профиль 3" and W.calls == 2
+    assert await sp2.profile(W(), []) == ""
+
+
+async def test_manual_profile_file_wins(tmp_path):
+    from kino_bot.style import StyleProvider
+
+    manual = tmp_path / "my.md"
+    manual.write_text("Мой профиль\n", encoding="utf-8")
+    sp = StyleProvider(None, None, 5, None, profile_cache=str(tmp_path / "c.md"), profile_file=str(manual))
+    assert await sp.profile(None, ["a"]) == "Мой профиль"

@@ -49,17 +49,32 @@ class FakeBot:
     async def send_chat_action(self, *a, **k):
         pass
 
+    async def edit_message_text(self, text, chat_id=None, message_id=None, **kw):
+        self.sent.append((chat_id, "edit", text, None))
+
 
 class FakeGenerator:
     def __init__(self):
         self.n = 0
+        self.calls = []
 
-    async def generate(self, chat_id):
+    async def generate(self, chat_id, progress=None, mode="auto"):
         self.n += 1
+        self.calls.append(mode)
+        if progress:
+            await progress("✍️ Пишу пост…")
         item = NewsItem("s", "rss", f"t{self.n}", "", f"https://x/{self.n}", datetime.now(timezone.utc))
         img = Image(b"\xff\xd8\xff" + b"0" * 6000, "image.jpg") if self.n % 2 else None
         return Draft(id=f"d{self.n}", chat_id=chat_id, text=f"<b>Пост {self.n}</b>", item=item,
-                     topic=f"t{self.n}", image=img)
+                     topic=f"t{self.n}", image=img, mode=mode)
+
+    async def generate_digest(self, chat_id, progress=None):
+        return await self.generate(chat_id, progress, mode="digest")
+
+    async def generate_from_material(self, chat_id, docs, image=None, source_url="", progress=None):
+        d = await self.generate(chat_id, progress, mode="material")
+        d.docs = docs
+        return d
 
 
 def query(data, user=ADMIN):
@@ -139,3 +154,33 @@ async def test_non_admin_denied():
     m2 = message(user=555, text="/myid")
     await app.cmd_myid(m2)
     assert "555" in m2.replies[0]
+
+
+async def test_more_keeps_mode():
+    from kino_bot.llm import SourceDoc
+    from kino_bot.material import Material
+
+    app, bot = make()
+    await app.make_draft(ADMIN, mode="digest")
+    await app.on_more(query("more:d1"))
+    docs = [SourceDoc(kind="author", source="автор канала", text="заметки")]
+    await app.make_draft(ADMIN, mode="material", material=Material(docs=docs))
+    await app.on_more(query("more:d3"))
+    assert app.generator.calls == ["digest", "digest", "material", "material"]
+    assert app.drafts.get("d4").docs == docs  # новый вариант по тому же материалу
+    assert any(s[1] == "edit" and "Пишу" in s[2] for s in bot.sent)  # статус показывает этап
+
+
+async def test_short_text_gets_hint_not_material():
+    app, bot = make()
+    m = message(text="привет")
+    m.media_group_id = None
+    m.forward_origin = None
+    m.photo = None
+    m.caption = None
+    m.entities = None
+    m.caption_entities = None
+    app.http = object()
+    await app.any_text(m)
+    assert "/idea" in m.replies[0]
+    assert app.generator.calls == []

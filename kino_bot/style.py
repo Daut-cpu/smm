@@ -8,13 +8,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .formatting import sanitize_html
 from .sources.telegram import TelegramReader
+
+if TYPE_CHECKING:
+    from .llm import PostWriter
 
 log = logging.getLogger(__name__)
 
@@ -42,12 +47,25 @@ def load_style_file(path: str | Path) -> list[str]:
     return [c for c in (clean_example(x) for x in parts) if c]
 
 
+def examples_hash(examples: list[str]) -> str:
+    return hashlib.sha256("\n---\n".join(examples).encode("utf-8")).hexdigest()[:16]
+
+
+_HASH_LINE_RE = re.compile(r"^<!-- examples-hash: (\w+) -->\n?")
+
+
 class StyleProvider:
-    def __init__(self, tg: TelegramReader | None, channel: str | None, limit: int, file: str | None):
+    def __init__(self, tg: TelegramReader | None, channel: str | None, limit: int, file: str | None,
+                 profile_cache: str = "data/style_profile.md", profile_file: str | None = None):
         self.tg = tg
         self.channel = channel
         self.limit = limit
         self.file = file
+        self.profile_cache = Path(profile_cache)
+        self.profile_file = Path(profile_file) if profile_file else None
+        self._profile = ""
+        self._profile_hash = ""
+        self._profile_lock = asyncio.Lock()
         self._examples: list[str] = []
         self._next_refresh = 0.0
         self._lock = asyncio.Lock()
@@ -80,3 +98,45 @@ class StyleProvider:
             self._examples = examples[: max(self.limit, 1) * 2]
             self._next_refresh = time.monotonic() + (RETRY_SECONDS if failed else REFRESH_SECONDS)
             return self._examples
+
+    async def profile(self, writer: "PostWriter", examples: list[str]) -> str:
+        """Стилевой профиль автора. Свой файл STYLE_PROFILE_FILE важнее автоматического профиля.
+
+        Автоматический профиль строится по образцам один раз и хранится в data/style_profile.md;
+        пересобирается только когда меняются образцы.
+        """
+        if self.profile_file and self.profile_file.exists():
+            return self.profile_file.read_text(encoding="utf-8").strip()
+        if not examples:
+            return ""
+        digest = examples_hash(examples)
+        async with self._profile_lock:
+            if self._profile and self._profile_hash == digest:
+                return self._profile
+            cached = self._read_cache()
+            if cached and cached[0] == digest:
+                self._profile, self._profile_hash = cached[1], digest
+                return self._profile
+            try:
+                profile = await writer.build_profile(examples)
+            except Exception as exc:  # noqa: BLE001 — без профиля пишем по одним образцам
+                log.warning("Не удалось построить стилевой профиль: %s", exc)
+                return cached[1] if cached else self._profile
+            self._profile, self._profile_hash = profile, digest
+            try:
+                self.profile_cache.parent.mkdir(parents=True, exist_ok=True)
+                self.profile_cache.write_text(f"<!-- examples-hash: {digest} -->\n{profile}\n", encoding="utf-8")
+                log.info("Стилевой профиль обновлён и сохранён в %s", self.profile_cache)
+            except OSError as exc:
+                log.warning("Не удалось сохранить профиль в %s: %s", self.profile_cache, exc)
+            return profile
+
+    def _read_cache(self) -> tuple[str, str] | None:
+        try:
+            raw = self.profile_cache.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        m = _HASH_LINE_RE.match(raw)
+        if not m:
+            return None
+        return m.group(1), raw[m.end():].strip()

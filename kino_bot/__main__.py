@@ -62,18 +62,20 @@ async def main() -> None:
 
     collector = NewsCollector(config.feeds, http, tg_reader, config.max_age_hours)
     writer = PostWriter(config.anthropic_api_key, config.model, config.effort, config.channel_style,
-                        config.post_max_len)
-    style = StyleProvider(tg_reader, config.style_channel, config.style_examples, config.style_file)
+                        config.post_max_len, gender=config.author_gender)
+    style = StyleProvider(tg_reader, config.style_channel, config.style_examples, config.style_file,
+                          profile_file=config.style_profile_file)
     generator = Generator(collector, writer, ImageFinder(http, tg_reader), config.show_source,
-                          style=style, max_len=config.post_max_len)
+                          style=style, max_len=config.post_max_len, http=http, review=config.review)
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True))
-    app = KinoBot(bot, generator, config.channel_id, config.admin_ids)
+    app = KinoBot(bot, generator, config.channel_id, config.admin_ids, http=http)
     dp = Dispatcher()
     dp.include_router(app.router)
 
     await bot.set_my_commands([
-        BotCommand(command="idea", description="Идея поста по свежей новости"),
+        BotCommand(command="idea", description="Пост по свежему поводу"),
+        BotCommand(command="digest", description="Подборка премьер"),
         BotCommand(command="help", description="Что умеет бот"),
         BotCommand(command="myid", description="Мой Telegram id"),
     ])

@@ -69,11 +69,14 @@ class Config:
     tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Moscow"))
     show_source: bool = True
     model: str = "claude-sonnet-5-5"
-    effort: str = "low"
+    effort: str = "medium"
     style_channel: str | None = None
     style_examples: int = 15
     style_file: str | None = "style_examples.txt"
-    post_max_len: int = 800
+    style_profile_file: str | None = None
+    post_max_len: int = 2000
+    author_gender: str | None = None
+    review: bool = True
 
     @property
     def telegram_reader_enabled(self) -> bool:
@@ -126,18 +129,22 @@ class Config:
         except ValueError as exc:
             raise ConfigError("MAX_AGE_HOURS должен быть числом") from exc
 
-        effort = env.get("EFFORT", "").strip().lower() or "low"
+        effort = env.get("EFFORT", "").strip().lower() or "medium"
         if effort not in {"low", "medium", "high", "xhigh", "max"}:
             raise ConfigError("EFFORT должен быть одним из: low, medium, high, xhigh, max")
 
         try:
             style_examples = int(env.get("STYLE_EXAMPLES", "").strip() or 15)
-            post_max_len = int(env.get("POST_MAX_LEN", "").strip() or 800)
+            post_max_len = int(env.get("POST_MAX_LEN", "").strip() or 2000)
         except ValueError as exc:
             raise ConfigError("STYLE_EXAMPLES и POST_MAX_LEN должны быть числами") from exc
         if not 200 <= post_max_len <= 4000:
             raise ConfigError("POST_MAX_LEN должен быть от 200 до 4000")
         style_channel_raw = env.get("STYLE_CHANNEL", "").strip()
+        gender_raw = env.get("AUTHOR_GENDER", "").strip().lower()
+        gender_map = {"f": "f", "ж": "f", "female": "f", "жен": "f", "m": "m", "м": "m", "male": "m", "муж": "m"}
+        if gender_raw and gender_raw not in gender_map:
+            raise ConfigError("AUTHOR_GENDER должен быть «ж» или «м» (или пусто — определить по образцам)")
 
         feeds_raw = env.get("FEEDS")
         feeds = _split(feeds_raw) if feeds_raw and feeds_raw.strip() else list(DEFAULT_FEEDS)
@@ -163,4 +170,7 @@ class Config:
             style_examples=max(0, min(style_examples, 40)),
             style_file=env.get("STYLE_FILE", "").strip() or "style_examples.txt",
             post_max_len=post_max_len,
+            style_profile_file=env.get("STYLE_PROFILE_FILE", "").strip() or None,
+            author_gender=gender_map.get(gender_raw) if gender_raw else None,
+            review=_bool(env.get("REVIEW"), True),
         )
